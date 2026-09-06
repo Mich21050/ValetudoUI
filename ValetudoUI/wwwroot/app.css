@@ -1,4 +1,8 @@
 :root {
+  --phase-vacuum: #ffffff;
+  --phase-mop: #1e40af;
+  --phase-vacuum-and-mop: #c026d3;
+  --phase-unknown: #d97706;
   color-scheme: light dark;
   --bg: #f2f2f7;
   --surface: #ffffff;
@@ -19,6 +23,10 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --phase-vacuum: #000000;
+    --phase-mop: #7dd3fc;
+    --phase-vacuum-and-mop: #e879f9;
+    --phase-unknown: #fbbf24;
     --bg: #000000;
     --surface: #1c1c1e;
     --surface-2: #2c2c2e;
@@ -445,3 +453,16 @@ input[type=number] {
 #blazor-error-ui .dismiss { cursor: pointer; position: absolute; right: .75rem; top: .5rem; }
 
 h1:focus { outline: none; }
+
+/* Run phase legend (history detail) */
+.phase-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.phase-toggle {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--card-2, transparent);
+  color: var(--text); font: inherit; cursor: pointer;
+}
+.phase-toggle.off { opacity: .45; }
+.phase-toggle .swatch { width: 14px; height: 14px; border-radius: 4px; border: 1px solid rgba(127,127,127,.6); flex: none; }
+.phase-toggle .phase-name { font-weight: 600; }
+.phase-toggle .phase-meta { margin-left: auto; color: var(--text-2); font-size: .85rem; white-space: nowrap; }
+.phase-toggle .bi { color: var(--text-2); }

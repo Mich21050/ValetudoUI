@@ -52,6 +52,24 @@ substituted in, plus time and area from `CurrentStatisticsCapability`.
 
 Runs shorter than `History:MinRunSeconds` with almost no path are discarded.
 
+### Phases (vacuum then mop)
+
+A run is split into phases at every dock visit the robot makes while its task is still resumable:
+the mop wash and pad change between the vacuum and mop passes of a "vacuum then mop" cycle, the
+periodic mop washes during a mop clean, or a mid-task charge. Each phase records its start/end,
+duration, the area gained (from `CurrentStatisticsCapability`) and a kind:
+
+| Situation | Kind |
+|---|---|
+| operation mode `vacuum` / `mop` / `vacuum_and_mop` | that mode |
+| anything else (sequential mode or unknown) and the mop is reported detached | `vacuum` |
+| anything else, first phase | `vacuum` |
+| anything else, later phases | `mop` |
+
+The stored map tags every path entity with `metaData.phase` and `metaData.phaseKind`; the map
+renderer colours paths by kind (`--phase-*` variables in `app.css`) and the run detail page lets you
+show or hide each phase.
+
 ## Testing without the vacuum
 
 A fake robot can be hosted inside the app (Development environment only):
@@ -66,6 +84,8 @@ four-room flat. Start a scripted run with
 
 ```
 curl -X POST 'http://localhost:5282/fake/scenario?seconds=60&pathResetAt=20&segments=1,2'
+# vacuum-then-mop: docks (resumable) at 20 s, mops attached afterwards -> two phases
+curl -X POST 'http://localhost:5282/fake/scenario?seconds=60&washAt=20&thenMop=true&segments=1,2'
 curl -X POST 'http://localhost:5282/fake/scenario/error?message=Stuck'
 ```
 

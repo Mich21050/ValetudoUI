@@ -15,7 +15,7 @@ else
 {
     <div class="dash">
         <section class="dash-map">
-            <MapView Source="MapSource.History" RunId="Id" Mode="MapMode.View"/>
+            <MapView @ref="_map" Source="MapSource.History" RunId="Id" Mode="MapMode.View"/>
         </section>
         <aside class="dash-side">
             <div class="page-head">
@@ -74,6 +74,35 @@ else
                 </div>
             </div>
 
+            @if (_run.Phases.Count > 0)
+            {
+                <div class="card">
+                    <div class="card-title">
+                        Phases
+                        @if (_run.Phases.Count > 1)
+                        {
+                            <button class="btn sm" style="float:right" @onclick="ShowAllPhases" disabled="@(_hiddenPhases.Count == 0)">Show all</button>
+                        }
+                    </div>
+                    <div class="phase-list">
+                        @foreach (var phase in _run.Phases)
+                        {
+                            var hidden = _hiddenPhases.Contains(phase.Index);
+                            <button class="phase-toggle @(hidden ? "off" : "")" @onclick="() => TogglePhase(phase.Index)" title="@(hidden ? "Show on map" : "Hide from map")">
+                                <span class="swatch" style="background:@Format.PhaseColorVar(phase.Kind)"></span>
+                                <span class="phase-name">@(_run.Phases.Count > 1 ? $"{phase.Index + 1}. " : "")@Format.PhaseKind(phase.Kind)</span>
+                                <span class="phase-meta">@PhaseMeta(phase)</span>
+                                <i class="bi @(hidden ? "bi-eye-slash" : "bi-eye")"></i>
+                            </button>
+                        }
+                    </div>
+                    @if (_run.Phases.Count > 1)
+                    {
+                        <div class="small" style="margin-top:8px">Phases are split at each dock visit during the run (mop wash, pad change, charging).</div>
+                    }
+                </div>
+            }
+
             <div class="btn-row">
                 <a class="btn" href="api/history/@Id/map" download="cleaning-run-@(Id).json"><i class="bi bi-download"></i> Map JSON</a>
                 <button class="btn danger" @onclick="Delete" disabled="@_busy"><i class="bi bi-trash3"></i> Delete</button>
@@ -86,8 +115,37 @@ else
     [Parameter] public int Id { get; set; }
 
     private CleaningRun? _run;
+    private MapView? _map;
+    private readonly HashSet<int> _hiddenPhases = [];
     private bool _loaded;
     private bool _busy;
+
+    private static string PhaseMeta(RunPhase p)
+    {
+        var parts = new List<string>();
+        if (p.DurationSeconds > 0) parts.Add(Format.Duration(p.DurationSeconds));
+        if (p.AreaCm2 is { } a && a > 0) parts.Add(Format.Area(a));
+        return string.Join(" · ", parts);
+    }
+
+    private async Task TogglePhase(int index)
+    {
+        if (!_hiddenPhases.Remove(index)) _hiddenPhases.Add(index);
+        await ApplyPhaseFilter();
+    }
+
+    private async Task ShowAllPhases()
+    {
+        _hiddenPhases.Clear();
+        await ApplyPhaseFilter();
+    }
+
+    private Task ApplyPhaseFilter()
+    {
+        if (_map is null || _run is null) return Task.CompletedTask;
+        var visible = _hiddenPhases.Count == 0 ? null : _run.Phases.Select(p => p.Index).Where(i => !_hiddenPhases.Contains(i));
+        return _map.SetVisiblePhasesAsync(visible);
+    }
 
     protected override async Task OnParametersSetAsync()
     {

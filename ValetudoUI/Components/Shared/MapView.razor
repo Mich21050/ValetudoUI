@@ -88,6 +88,8 @@
     // Cast to object so the array is passed as ONE JS argument instead of being spread into params.
     public Task SetSelectionAsync(IEnumerable<string> ids) => Call("setSelection", (object)ids.ToArray());
     public Task ClearZonesAsync() => Call("clearZones");
+    /// <summary>Draw only the given run phases; null shows all of them.</summary>
+    public Task SetVisiblePhasesAsync(IEnumerable<int>? phases) => Call("setVisiblePhases", phases is null ? null : (object)phases.ToArray());
     public Task ClearGotoAsync() => Call("clearGoto");
     public Task FitAsync() => Call("fit");
     private Task ZoomIn() => Call("zoomBy", 1.4);

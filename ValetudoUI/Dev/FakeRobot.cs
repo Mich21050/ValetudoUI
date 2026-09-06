@@ -30,6 +30,7 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
     public string Status { get; private set; } = "docked";
     public string Flag { get; private set; } = "none";
     public string? ErrorMessage { get; private set; }
+    public bool MopAttached { get; private set; } = true;
     public int Battery { get; private set; } = 100;
     public string DockStatus { get; private set; } = "idle";
     public Dictionary<string, string> Presets { get; } = new()
@@ -101,7 +102,7 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
 
         // Dev hook: start cleaning immediately (tests recorder recovery after an app restart).
         if (configuration.GetValue<int?>("Valetudo:FakeStartScenarioSeconds") is { } seconds and > 0)
-            StartScenario(seconds, null, ["1"], "segment");
+            StartScenario(seconds, null, ["1"], "segment", null, false);
     }
 
     // ---- subscriptions ----------------------------------------------------------
@@ -149,7 +150,7 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
                     ["error"] = Status == "error" ? new { severity = new { kind = "transient", level = "error" }, subsystem = "navigation", message = ErrorMessage ?? "Fake error", vendorErrorCode = 42 } : null
                 },
                 new { __class = "BatteryStateAttribute", metaData = new { }, level = Battery, flag = Status == "docked" ? (Battery >= 100 ? "charged" : "charging") : "discharging" },
-                new { __class = "AttachmentStateAttribute", metaData = new { }, type = "mop", attached = true },
+                new { __class = "AttachmentStateAttribute", metaData = new { }, type = "mop", attached = MopAttached },
                 new { __class = "DockStatusStateAttribute", metaData = new { }, value = DockStatus },
                 new { __class = "DockComponentStateAttribute", metaData = new { }, type = "dustbag", value = "ok" },
                 new { __class = "DockComponentStateAttribute", metaData = new { }, type = "water_tank_clean", value = "ok" },
@@ -328,8 +329,13 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
         PublishState();
     }
 
-    /// <summary>Starts a scripted run: cleaning for <paramref name="seconds"/>, optional path reset at <paramref name="pathResetAt"/> seconds.</summary>
-    public void StartScenario(int seconds, int? pathResetAt, IReadOnlyList<string>? segmentIds, string flag)
+    /// <summary>
+    /// Starts a scripted run: cleaning for <paramref name="seconds"/>, optional path reset at <paramref name="pathResetAt"/> seconds.
+    /// With <paramref name="washAt"/> the robot drives to the dock at that second, reports docked+resumable for a few
+    /// seconds (mop wash) and continues; <paramref name="thenMop"/> additionally simulates "vacuum then mop" with pad
+    /// removal: mops detached in the first part, attached after the dock visit.
+    /// </summary>
+    public void StartScenario(int seconds, int? pathResetAt, IReadOnlyList<string>? segmentIds, string flag, int? washAt = null, bool thenMop = false)
     {
         CancelScenario();
         var cts = new CancellationTokenSource();
@@ -341,14 +347,19 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
             Flag = flag;
             ErrorMessage = null;
             RunStartedUtc = DateTime.UtcNow;
+            if (thenMop)
+            {
+                Presets["operation_mode"] = "vacuum_then_mop";
+                MopAttached = false;
+            }
             _path.Clear();
             _path.Add(_robot.X);
             _path.Add(_robot.Y);
         }
         PublishState();
         PublishMap();
-        _ = RunScenarioAsync(seconds, pathResetAt, cts.Token);
-        log.LogInformation("Fake scenario started: {Seconds}s, path reset at {Reset}", seconds, pathResetAt);
+        _ = RunScenarioAsync(seconds, pathResetAt, washAt, thenMop, cts.Token);
+        log.LogInformation("Fake scenario started: {Seconds}s, path reset at {Reset}, wash at {Wash}, then-mop {ThenMop}", seconds, pathResetAt, washAt, thenMop);
     }
 
     private void CancelScenario()
@@ -358,11 +369,12 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
         old?.Cancel();
     }
 
-    private async Task RunScenarioAsync(int seconds, int? pathResetAt, CancellationToken ct)
+    private async Task RunScenarioAsync(int seconds, int? pathResetAt, int? washAt, bool thenMop, CancellationToken ct)
     {
         var rng = new Random();
         var started = DateTime.UtcNow;
         var resetDone = false;
+        var washDone = false;
         try
         {
             while (!ct.IsCancellationRequested)
@@ -370,6 +382,13 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
                 await Task.Delay(2000, ct);
                 var elapsed = (DateTime.UtcNow - started).TotalSeconds;
                 if (elapsed >= seconds) break;
+
+                if (washAt is { } w && !washDone && elapsed >= w)
+                {
+                    washDone = true;
+                    await MidRunDockVisitAsync(thenMop, ct);
+                    continue;
+                }
 
                 lock (_lock)
                 {
@@ -393,7 +412,34 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
         }
     }
 
-    private async Task ReturnHomeAsync(CancellationToken ct)
+    /// <summary>Drives to the dock, reports docked + resumable (washing mops) for a while, then resumes with a fresh path.</summary>
+    private async Task MidRunDockVisitAsync(bool thenMop, CancellationToken ct)
+    {
+        await DriveToDockAsync(ct);
+        lock (_lock)
+        {
+            Status = "docked";
+            Flag = "resumable";
+            DockStatus = "cleaning";
+        }
+        PublishState();
+        await Task.Delay(8000, ct);
+        lock (_lock)
+        {
+            if (thenMop) MopAttached = true;
+            DockStatus = "idle";
+            Status = "cleaning";
+            Flag = _activeSegments.Count > 0 ? "segment" : "none";
+            _path.Clear();
+            _path.Add(_robot.X);
+            _path.Add(_robot.Y);
+        }
+        PublishState();
+        PublishMap();
+        log.LogInformation("Fake robot resumed after dock visit (mop attached: {Mop})", MopAttached);
+    }
+
+    private async Task DriveToDockAsync(CancellationToken ct)
     {
         lock (_lock) { Status = "returning"; }
         PublishState();
@@ -408,6 +454,11 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
             }
             PublishMap();
         }
+    }
+
+    private async Task ReturnHomeAsync(CancellationToken ct)
+    {
+        await DriveToDockAsync(ct);
         lock (_lock)
         {
             Status = "docked";

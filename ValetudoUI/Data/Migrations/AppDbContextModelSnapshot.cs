@@ -59,6 +59,10 @@ namespace ValetudoUI.Data.Migrations
                     b.Property<int>("PathSegmentCount")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("Phases")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("RunType")
                         .IsRequired()
                         .HasMaxLength(20)

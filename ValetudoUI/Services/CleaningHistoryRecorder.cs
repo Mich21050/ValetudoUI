@@ -171,7 +171,12 @@ public sealed class CleaningHistoryRecorder(
 
         if (cleaning)
         {
-            _graceDeadline = null;
+            if (_graceDeadline is not null)
+            {
+                // Back from a mid-task dock visit (mop wash, pad swap, charge): everything from here on is a new phase.
+                _graceDeadline = null;
+                BeginPhase(s);
+            }
         }
         else if (terminal)
         {
@@ -180,6 +185,7 @@ public sealed class CleaningHistoryRecorder(
                 if (_graceDeadline is null)
                 {
                     _graceDeadline = DateTime.UtcNow.AddMinutes(_opts.ResumableGraceMinutes);
+                    ClosePhase(DateTime.UtcNow, CumulativeArea(monitor.CurrentStats));
                     log.LogInformation("Run {Id}: robot {Status} but resumable, keeping run open until {Deadline:u}", _run.Id, status.Value, _graceDeadline);
                 }
             }
@@ -235,6 +241,7 @@ public sealed class CleaningHistoryRecorder(
             OperationMode = s.Preset("operation_mode"),
             Map = new CleaningRunMap()
         };
+        run.Phases.Add(NewPhase(0, now, s));
 
         _path = new PathAccumulator();
         _activeSegments.Clear();
@@ -280,6 +287,7 @@ public sealed class CleaningHistoryRecorder(
         ApplySegments(run);
         run.PathPointCount = _path.TotalPoints;
         run.PathSegmentCount = _path.Segments.Count;
+        UpdatePhasePoints(run);
         run.Map ??= new CleaningRunMap();
         run.Map.MapJsonGzip = GzipUtil.Compress(_latestMapJson);
         run.Map.PathJsonGzip = _path.ToGzipJson();
@@ -315,6 +323,8 @@ public sealed class CleaningHistoryRecorder(
         run.PathPointCount = _path.TotalPoints;
         run.PathSegmentCount = _path.Segments.Count;
         run.LastCheckpointUtc = now;
+        ClosePhase(now, reportedArea is > 0 ? (long)reportedArea.Value : CumulativeArea(monitor.CurrentStats));
+        UpdatePhasePoints(run);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         if (run.DurationSeconds < _opts.MinRunSeconds && run.PathPointCount < 10)
@@ -327,12 +337,13 @@ public sealed class CleaningHistoryRecorder(
         {
             run.State = RunState.Completed;
             run.Map ??= new CleaningRunMap();
-            run.Map.MapJsonGzip = GzipUtil.Compress(SubstitutePath(_latestMapJson, _path.Segments));
+            run.Map.MapJsonGzip = GzipUtil.Compress(SubstitutePath(_latestMapJson, _path.Segments, run.Phases));
             run.Map.PathJsonGzip = _path.ToGzipJson();
             db.Update(run);
             await db.SaveChangesAsync(ct);
-            log.LogInformation("Run {Id} completed: {Seconds}s, {Area} m², {Points} path points, rooms [{Rooms}]",
-                run.Id, run.DurationSeconds, run.AreaM2?.ToString("0.0") ?? "?", run.PathPointCount, string.Join(", ", run.SegmentNames));
+            log.LogInformation("Run {Id} completed: {Seconds}s, {Area} m², {Points} path points, {Phases} phase(s) [{Kinds}], rooms [{Rooms}]",
+                run.Id, run.DurationSeconds, run.AreaM2?.ToString("0.0") ?? "?", run.PathPointCount,
+                run.Phases.Count, string.Join(", ", run.Phases.Select(p => p.Kind)), string.Join(", ", run.SegmentNames));
         }
 
         _run = null;
@@ -340,6 +351,61 @@ public sealed class CleaningHistoryRecorder(
         _activeSegments.Clear();
         _graceDeadline = null;
         Changed?.Invoke();
+    }
+
+    // ---- phases -------------------------------------------------------------------
+
+    private static RunPhase NewPhase(int index, DateTime startedUtc, RobotSnapshot s)
+    {
+        var mode = s.Preset("operation_mode");
+        var mop = s.Attachments.FirstOrDefault(a => string.Equals(a.Type, "mop", StringComparison.OrdinalIgnoreCase))?.Attached;
+        return new RunPhase
+        {
+            Index = index,
+            Kind = PhaseKinds.Classify(mode, mop, index),
+            StartedUtc = startedUtc,
+            OperationMode = mode,
+            MopAttached = mop
+        };
+    }
+
+    private void BeginPhase(RobotSnapshot s)
+    {
+        if (_run is null) return;
+        var now = DateTime.UtcNow;
+        ClosePhase(now, CumulativeArea(monitor.CurrentStats));
+        var phase = NewPhase(_run.Phases.Count, now, s);
+        _run.Phases.Add(phase);
+        _path.BeginPhase(phase.Index);
+        log.LogInformation("Run {Id}: phase {Index} started ({Kind}; mode {Mode}, mop attached: {Mop})",
+            _run.Id, phase.Index + 1, phase.Kind, phase.OperationMode ?? "?", phase.MopAttached?.ToString() ?? "?");
+    }
+
+    /// <summary>Marks the current phase as ended (idempotent) and attributes the area gained since the previous phase to it.</summary>
+    private void ClosePhase(DateTime now, long? cumulativeAreaCm2)
+    {
+        if (_run is null || _run.Phases.Count == 0) return;
+        var phase = _run.Phases[^1];
+        if (phase.EndedUtc is not null) return;
+        phase.EndedUtc = now;
+        phase.DurationSeconds = (int)(now - phase.StartedUtc).TotalSeconds;
+        if (cumulativeAreaCm2 is { } cum)
+        {
+            var before = _run.Phases.Take(_run.Phases.Count - 1).Sum(p => p.AreaCm2 ?? 0);
+            // A negative delta means the robot restarted its counters at the dock visit; take the raw value then.
+            phase.AreaCm2 = cum >= before ? cum - before : cum;
+        }
+    }
+
+    private void UpdatePhasePoints(CleaningRun run)
+    {
+        foreach (var phase in run.Phases) phase.PathPointCount = _path.PointsInPhase(phase.Index);
+    }
+
+    private static long? CumulativeArea(IReadOnlyList<Valetudo.Models.StatisticEntry>? stats)
+    {
+        var area = stats?.FirstOrDefault(x => x.Type == "area")?.Value;
+        return area is > 0 ? (long)area.Value : null;
     }
 
     // ---- helpers ------------------------------------------------------------------
@@ -377,8 +443,11 @@ public sealed class CleaningHistoryRecorder(
 
     private static string StatusKey(RobotSnapshot s) => $"{s.StatusValue}/{s.StatusFlag}";
 
-    /// <summary>Replaces the map's path entities with the accumulated path (one PathMapEntity per segment).</summary>
-    internal static string? SubstitutePath(string? mapJson, IReadOnlyList<int[]> segments)
+    /// <summary>
+    /// Replaces the map's path entities with the accumulated path: one PathMapEntity per segment, tagged with
+    /// <c>metaData.phase</c> (index) and <c>metaData.phaseKind</c> so the renderer can colour and filter them.
+    /// </summary>
+    internal static string? SubstitutePath(string? mapJson, IReadOnlyList<PathSegment> segments, IReadOnlyList<RunPhase> phases)
     {
         if (string.IsNullOrEmpty(mapJson)) return mapJson;
         if (JsonNode.Parse(mapJson) is not JsonObject root) return mapJson;
@@ -398,11 +467,12 @@ public sealed class CleaningHistoryRecorder(
 
         foreach (var seg in segments)
         {
+            var kind = phases.FirstOrDefault(p => p.Index == seg.Phase)?.Kind ?? PhaseKinds.Unknown;
             entities.Add(new JsonObject
             {
                 ["__class"] = "PathMapEntity",
-                ["metaData"] = new JsonObject(),
-                ["points"] = new JsonArray(seg.Select(v => (JsonNode)v).ToArray()),
+                ["metaData"] = new JsonObject { ["phase"] = seg.Phase, ["phaseKind"] = kind },
+                ["points"] = new JsonArray(seg.Points.Select(v => (JsonNode)v).ToArray()),
                 ["type"] = "path"
             });
         }

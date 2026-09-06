@@ -28,6 +28,22 @@ const COLORS = {
 
 const DIM_ALPHA = 0.42;
 
+// Path colour per run phase kind. Defined in app.css (--phase-vacuum etc.) so the legend and the map agree;
+// these are the fallbacks.
+const PHASE_FALLBACK = {
+  light: { vacuum: '#ffffff', mop: '#1e40af', vacuum_and_mop: '#c026d3', unknown: '#d97706' },
+  dark: { vacuum: '#000000', mop: '#7dd3fc', vacuum_and_mop: '#e879f9', unknown: '#fbbf24' }
+};
+
+function phaseColor(kind, theme) {
+  const key = kind && PHASE_FALLBACK.light[kind] ? kind : 'unknown';
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--phase-' + key.replace(/_/g, '-')).trim();
+    if (v) return v;
+  } catch (e) { /* ignore */ }
+  return (PHASE_FALLBACK[theme] || PHASE_FALLBACK.light)[key];
+}
+
 export function create(canvas, dotnetRef, options) {
   return new MapRenderer(canvas, dotnetRef, options || {});
 }
@@ -156,6 +172,7 @@ class MapRenderer {
     this.zones = [];
     this.draft = null;
     this.gotoPoint = null;
+    this.visiblePhases = null; // null = all; otherwise an array of phase indices to draw
     this.pointers = new Map();
     this.gesture = null;
     this.etag = null;
@@ -244,6 +261,8 @@ class MapRenderer {
   clearZones() { this.zones = []; this.draft = null; this._draw(); }
   clearGoto() { this.gotoPoint = null; this._draw(); }
   setMaxZones(n) { this.opts.maxZones = n; }
+  /** Restrict path drawing to the given phase indices (null/undefined = draw every phase). */
+  setVisiblePhases(phases) { this.visiblePhases = Array.isArray(phases) ? phases.map(Number) : null; this._draw(); }
 
   fit() {
     if (!this.raster) return;
@@ -406,10 +425,13 @@ class MapRenderer {
       if (e.type !== 'path' && e.type !== 'predicted_path') continue;
       const pts = e.points || [];
       if (pts.length < 4) continue;
+      const md = e.metaData || {};
+      const phase = md.phase == null ? null : Number(md.phase);
+      if (this.visiblePhases && phase != null && !this.visiblePhases.includes(phase)) continue;
       polyline(pts);
       ctx.lineWidth = Math.max(0.35, px(1.5));
       if (e.type === 'predicted_path') { ctx.strokeStyle = pal.predicted; ctx.setLineDash([px(3), px(3)]); }
-      else { ctx.strokeStyle = pal.path; ctx.setLineDash([]); }
+      else { ctx.strokeStyle = phase == null ? pal.path : phaseColor(md.phaseKind, this.theme); ctx.setLineDash([]); }
       ctx.stroke();
       ctx.setLineDash([]);
     }

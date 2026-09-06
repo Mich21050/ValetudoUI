@@ -11,7 +11,7 @@ using ValetudoUI.Data;
 namespace ValetudoUI.Data.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260906123730_Initial")]
+    [Migration("20260906203352_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
@@ -61,6 +61,10 @@ namespace ValetudoUI.Data.Migrations
 
                     b.Property<int>("PathSegmentCount")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("Phases")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("RunType")
                         .IsRequired()

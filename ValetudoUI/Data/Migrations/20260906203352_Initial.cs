@@ -36,7 +36,8 @@ namespace ValetudoUI.Data.Migrations
                     ErrorMessage = table.Column<string>(type: "TEXT", nullable: true),
                     MapNonce = table.Column<string>(type: "TEXT", nullable: true),
                     PathPointCount = table.Column<int>(type: "INTEGER", nullable: false),
-                    PathSegmentCount = table.Column<int>(type: "INTEGER", nullable: false)
+                    PathSegmentCount = table.Column<int>(type: "INTEGER", nullable: false),
+                    Phases = table.Column<string>(type: "TEXT", nullable: false)
                 },
                 constraints: table =>
                 {

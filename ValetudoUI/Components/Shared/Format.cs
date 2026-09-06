@@ -106,6 +106,23 @@ public static class Format
         _ => $"{r.Value:0} {r.Unit}"
     };
 
+    public static string PhaseKind(string kind) => kind switch
+    {
+        PhaseKinds.Vacuum => "Vacuum",
+        PhaseKinds.Mop => "Mop",
+        PhaseKinds.VacuumAndMop => "Vacuum + mop",
+        _ => "Cleaning"
+    };
+
+    /// <summary>CSS custom property carrying the phase's path colour (see app.css).</summary>
+    public static string PhaseColorVar(string kind) => kind switch
+    {
+        PhaseKinds.Vacuum => "var(--phase-vacuum)",
+        PhaseKinds.Mop => "var(--phase-mop)",
+        PhaseKinds.VacuumAndMop => "var(--phase-vacuum-and-mop)",
+        _ => "var(--phase-unknown)"
+    };
+
     public static string RunType(string type) => type switch
     {
         "segment" => "Rooms",
