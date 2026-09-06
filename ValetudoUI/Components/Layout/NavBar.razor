@@ -1,5 +1,6 @@
 @implements IDisposable
 @inject RobotMonitorService Monitor
+@inject IJSRuntime JS
 
 <nav class="navbar">
     <NavLink class="nav-item" href="" Match="NavLinkMatch.All">
@@ -15,10 +16,49 @@
         <span class="dot @(Monitor.Connected ? "on" : "off")"></span>
         <span class="nav-status-text">@(Monitor.Info?.ModelName ?? "Valetudo")</span>
     </div>
+    <button class="nav-item theme-toggle" type="button" title="Theme: @ThemeLabel(_theme)" @onclick="CycleTheme">
+        <i class="nav-icon bi @ThemeIcon(_theme)"></i><span>@ThemeLabel(_theme)</span>
+    </button>
 </nav>
 
 @code {
+    private string _theme = "system";
+
     protected override void OnInitialized() => Monitor.ConnectionChanged += OnChanged;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try
+        {
+            _theme = await JS.InvokeAsync<string>("valetudoTheme.get");
+            StateHasChanged();
+        }
+        catch (JSDisconnectedException) { }
+        catch (JSException) { }
+    }
+
+    private async Task CycleTheme()
+    {
+        var next = _theme switch { "system" => "light", "light" => "dark", _ => "system" };
+        try { _theme = await JS.InvokeAsync<string>("valetudoTheme.set", next); }
+        catch (JSDisconnectedException) { }
+        catch (JSException) { }
+    }
+
+    private static string ThemeIcon(string mode) => mode switch
+    {
+        "light" => "bi-sun-fill",
+        "dark" => "bi-moon-stars-fill",
+        _ => "bi-circle-half"
+    };
+
+    private static string ThemeLabel(string mode) => mode switch
+    {
+        "light" => "Light",
+        "dark" => "Dark",
+        _ => "System"
+    };
 
     private void OnChanged()
     {

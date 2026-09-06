@@ -32,6 +32,15 @@
     font-size: .85rem;
 }
 
+.theme-toggle {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent;
+}
+
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); }
 .dot.on { background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 25%, transparent); }
 
@@ -49,4 +58,6 @@
     ::deep .nav-item.active { background: color-mix(in srgb, var(--accent) 12%, transparent); }
     ::deep .nav-icon { font-size: 1.15rem; }
     .nav-status { display: flex; margin-left: auto; }
+    .theme-toggle { padding: 0 10px; min-height: 40px; }
+    .theme-toggle:hover { background: color-mix(in srgb, var(--text-2) 12%, transparent); }
 }

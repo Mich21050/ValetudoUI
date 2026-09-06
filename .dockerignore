@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+**/*.db
+**/*.db-*
+.idea/
+.git/
+.env
+*.user

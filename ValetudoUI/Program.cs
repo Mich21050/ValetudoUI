@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using ValetudoUI.Components;
@@ -63,6 +64,10 @@ builder.Services.AddScoped<ToastService>();
 
 var dbPath = Path.Combine(builder.Environment.ContentRootPath, historyOptions.DbFileName);
 builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseSqlite($"Data Source={dbPath}"));
+
+// In the container the keys go to the /data volume so antiforgery cookies survive a recreate.
+if (builder.Configuration["DataProtection:KeysDir"] is { Length: > 0 } keysDir)
+    builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keysDir));
 
 builder.Services.AddResponseCompression(o =>
 {

@@ -1,0 +1,18 @@
+services:
+  valetudo-ui:
+    build: .
+    image: valetudo-ui
+    container_name: valetudo-ui
+    restart: unless-stopped
+    ports:
+      - "5282:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - valetudo-ui-data:/data
+
+volumes:
+  valetudo-ui-data:

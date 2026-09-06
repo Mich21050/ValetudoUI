@@ -70,6 +70,19 @@ The stored map tags every path entity with `metaData.phase` and `metaData.phaseK
 renderer colours paths by kind (`--phase-*` variables in `app.css`) and the run detail page lets you
 show or hide each phase.
 
+The theme button in the nav bar cycles System / Light / Dark; the choice is stored in the browser.
+
+## Docker
+
+```
+cp .env.example .env      # set Valetudo__BaseUrl (and Telegram keys if wanted)
+docker compose up -d --build
+```
+
+The UI is on port 5282; the SQLite database lives in the `valetudo-ui-data` volume (`/data` in the
+container). Set `TZ` in `.env` so run times show in your local time. The fake robot is not available
+in the container (Production environment).
+
 ## Telegram notifications
 
 The app can post to a Telegram chat when a run finishes and when the robot reports an error. It calls

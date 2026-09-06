@@ -194,6 +194,7 @@ class MapRenderer {
     document.addEventListener('visibilitychange', this._onVisibility);
     this.mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
     if (this.mq) this.mq.addEventListener('change', this._onTheme);
+    document.addEventListener('valetudo-theme', this._onTheme);
 
     this.ro = new ResizeObserver(() => this._resize());
     this.ro.observe(canvas);
@@ -290,6 +291,7 @@ class MapRenderer {
     c.removeEventListener('wheel', this._onWheel);
     document.removeEventListener('visibilitychange', this._onVisibility);
     if (this.mq) this.mq.removeEventListener('change', this._onTheme);
+    document.removeEventListener('valetudo-theme', this._onTheme);
     this.ro.disconnect();
     this.dotnet = null;
   }

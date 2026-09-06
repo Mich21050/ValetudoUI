@@ -4,3 +4,4 @@ obj/
 *.db-*
 .idea/
 *.user
+.env
