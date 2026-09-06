@@ -1,0 +1,54 @@
+@implements IDisposable
+@inject RobotMonitorService Monitor
+@inject ValetudoClient Client
+@inject ToastService Toast
+@inject CleaningHistoryRecorder Recorder
+
+@{
+    var v = Monitor.State.StatusValue;
+    var canStart = v is "docked" or "idle" or "paused" or "error";
+    var canPause = v is "cleaning" or "returning" or "moving";
+    var canStop = v is "cleaning" or "paused" or "returning" or "moving" or "manual_control";
+    var canHome = v is not ("docked" or "returning");
+}
+
+<div class="btn-row action-bar">
+    <button class="btn primary" disabled="@(!canStart || _busy)" @onclick="() => Send(BasicControlAction.Start)"><i class="bi bi-play-fill"></i> @(v == "paused" ? "Resume" : "Start")</button>
+    <button class="btn" disabled="@(!canPause || _busy)" @onclick="() => Send(BasicControlAction.Pause)"><i class="bi bi-pause-fill"></i> Pause</button>
+    <button class="btn" disabled="@(!canStop || _busy)" @onclick="() => Send(BasicControlAction.Stop)"><i class="bi bi-stop-fill"></i> Stop</button>
+    <button class="btn" disabled="@(!canHome || _busy)" @onclick="() => Send(BasicControlAction.Home)"><i class="bi bi-house-fill"></i> Dock</button>
+</div>
+
+@code {
+    private bool _busy;
+
+    protected override void OnInitialized() => Monitor.StateChanged += OnState;
+
+    private void OnState(RobotSnapshot snapshot)
+    {
+        try { _ = InvokeAsync(StateHasChanged); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    private async Task Send(BasicControlAction action)
+    {
+        _busy = true;
+        try
+        {
+            if (action == BasicControlAction.Start && Monitor.State.StatusValue != "paused")
+                Recorder.NoteCommand(new FullCleanHint());
+            await Client.BasicControlAsync(action, CancellationToken.None);
+        }
+        catch (Exception e)
+        {
+            Toast.Error(e.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    public void Dispose() => Monitor.StateChanged -= OnState;
+}

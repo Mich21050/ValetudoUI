@@ -1,0 +1,108 @@
+@page "/history"
+@implements IDisposable
+@inject HistoryQueries Queries
+@inject CleaningHistoryRecorder Recorder
+
+<PageTitle>History</PageTitle>
+
+<div class="page">
+    <div class="page-head">
+        <h1>Cleaning history</h1>
+        <span class="muted small">@_total run@(_total == 1 ? "" : "s")</span>
+    </div>
+
+    @if (_items is null)
+    {
+        <div class="empty">Loading…</div>
+    }
+    else if (_items.Count == 0)
+    {
+        <div class="empty">
+            <p>No runs recorded yet.</p>
+            <p class="small">Runs are recorded automatically while this app is running and the robot cleans.</p>
+        </div>
+    }
+    else
+    {
+        <div class="list">
+            @foreach (var r in _items)
+            {
+                <a class="list-item" href="history/@r.Id">
+                    <div class="main">
+                        <div class="title">
+                            @Format.LocalDate(r.StartedUtc) · @Format.LocalTime(r.StartedUtc)
+                            <span class="badge @Format.RunStateClass(r.State)" style="margin-left:6px">@Format.RunState(r.State)</span>
+                        </div>
+                        <div class="sub">
+                            @Format.RunType(r.RunType)
+                            @if (r.SegmentNames.Count > 0)
+                            {
+                                <text> · @string.Join(", ", r.SegmentNames)</text>
+                            }
+                            @if (r.ErrorMessage is not null)
+                            {
+                                <text> · </text><i class="bi bi-exclamation-triangle-fill"></i><text> @r.ErrorMessage</text>
+                            }
+                        </div>
+                    </div>
+                    <div class="meta">
+                        <div><b>@Format.Duration(r.DurationSeconds)</b></div>
+                        <div class="muted small">@Format.Area(r.AreaCm2)</div>
+                    </div>
+                </a>
+            }
+        </div>
+        @if (_items.Count < _total)
+        {
+            <div style="margin-top:12px">
+                <button class="btn block" @onclick="LoadMore" disabled="@_loading">Load more</button>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    private const int PageSize = 50;
+    private List<RunListItem>? _items;
+    private int _total;
+    private bool _loading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Recorder.Changed += OnRecorderChanged;
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        var take = Math.Max(PageSize, _items?.Count ?? 0);
+        _total = await Queries.CountAsync(CancellationToken.None);
+        _items = await Queries.ListAsync(0, take, CancellationToken.None);
+        _loading = false;
+    }
+
+    private async Task LoadMore()
+    {
+        if (_items is null) return;
+        _loading = true;
+        _items.AddRange(await Queries.ListAsync(_items.Count, PageSize, CancellationToken.None));
+        _loading = false;
+    }
+
+    private void OnRecorderChanged()
+    {
+        try
+        {
+            _ = InvokeAsync(async () =>
+            {
+                await ReloadAsync();
+                StateHasChanged();
+            });
+        }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    public void Dispose() => Recorder.Changed -= OnRecorderChanged;
+}

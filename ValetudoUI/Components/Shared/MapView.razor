@@ -1,0 +1,124 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject RobotMonitorService Monitor
+
+<div class="map-view">
+    <canvas @ref="_canvas"></canvas>
+    @if (ShowControls)
+    {
+        <div class="map-controls">
+            <button class="btn icon" title="Zoom in" @onclick="ZoomIn"><i class="bi bi-plus-lg"></i></button>
+            <button class="btn icon" title="Zoom out" @onclick="ZoomOut"><i class="bi bi-dash-lg"></i></button>
+            <button class="btn icon" title="Fit map" @onclick="FitAsync"><i class="bi bi-arrows-fullscreen"></i></button>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public MapSource Source { get; set; } = MapSource.Live;
+    [Parameter] public int? RunId { get; set; }
+    [Parameter] public MapMode Mode { get; set; } = MapMode.View;
+    [Parameter] public int MaxZones { get; set; } = 1;
+    [Parameter] public bool ShowControls { get; set; } = true;
+    [Parameter] public EventCallback<string[]> SelectionChanged { get; set; }
+    [Parameter] public EventCallback<ZoneRect[]> ZonesChanged { get; set; }
+    [Parameter] public EventCallback<MapPoint> PointPicked { get; set; }
+
+    private ElementReference _canvas;
+    private IJSObjectReference? _module;
+    private IJSObjectReference? _renderer;
+    private DotNetObjectReference<MapView>? _selfRef;
+    private MapMode _appliedMode;
+    private int _appliedMaxZones;
+    private bool _subscribed;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            if (_renderer is null) return;
+            if (_appliedMode != Mode)
+            {
+                _appliedMode = Mode;
+                await Call("setMode", ModeName(Mode));
+            }
+            if (_appliedMaxZones != MaxZones)
+            {
+                _appliedMaxZones = MaxZones;
+                await Call("setMaxZones", MaxZones);
+            }
+            return;
+        }
+
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/valetudo-map.js");
+        _selfRef = DotNetObjectReference.Create(this);
+        var options = new
+        {
+            liveUrl = Source == MapSource.Live ? "/api/map/live" : null,
+            staticUrl = Source == MapSource.History ? $"/api/history/{RunId}/map" : null,
+            mode = ModeName(Mode),
+            maxZones = MaxZones
+        };
+        _renderer = await _module.InvokeAsync<IJSObjectReference>("create", _canvas, _selfRef, options);
+        _appliedMode = Mode;
+        _appliedMaxZones = MaxZones;
+
+        if (Source == MapSource.Live)
+        {
+            Monitor.MapChanged += OnMapChanged;
+            _subscribed = true;
+        }
+    }
+
+    private void OnMapChanged(MapSnapshot map)
+    {
+        try { _ = InvokeAsync(() => Call("refresh", map.Version)); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    private async Task Call(string method, params object?[] args)
+    {
+        if (_renderer is null) return;
+        try { await _renderer.InvokeVoidAsync(method, args); }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    // Cast to object so the array is passed as ONE JS argument instead of being spread into params.
+    public Task SetSelectionAsync(IEnumerable<string> ids) => Call("setSelection", (object)ids.ToArray());
+    public Task ClearZonesAsync() => Call("clearZones");
+    public Task ClearGotoAsync() => Call("clearGoto");
+    public Task FitAsync() => Call("fit");
+    private Task ZoomIn() => Call("zoomBy", 1.4);
+    private Task ZoomOut() => Call("zoomBy", 1 / 1.4);
+
+    [JSInvokable] public Task OnSelectionChanged(string[] ids) => SelectionChanged.InvokeAsync(ids);
+    [JSInvokable] public Task OnZoneChanged(ZoneRect[] zones) => ZonesChanged.InvokeAsync(zones);
+    [JSInvokable] public Task OnPointPicked(MapPoint point) => PointPicked.InvokeAsync(point);
+
+    private static string ModeName(MapMode mode) => mode switch
+    {
+        MapMode.SelectSegments => "select-segments",
+        MapMode.DrawZone => "draw-zone",
+        MapMode.GoTo => "go-to",
+        _ => "view"
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_subscribed) Monitor.MapChanged -= OnMapChanged;
+        try
+        {
+            if (_renderer is not null)
+            {
+                await _renderer.InvokeVoidAsync("destroy");
+                await _renderer.DisposeAsync();
+            }
+            if (_module is not null) await _module.DisposeAsync();
+        }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+        _selfRef?.Dispose();
+    }
+}

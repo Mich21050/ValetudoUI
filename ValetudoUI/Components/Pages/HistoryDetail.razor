@@ -1,0 +1,113 @@
+@page "/history/{Id:int}"
+@inject HistoryQueries Queries
+@inject NavigationManager Nav
+@inject ToastService Toast
+
+<PageTitle>Run @Id</PageTitle>
+
+@if (_run is null)
+{
+    <div class="page">
+        <div class="empty">@(_loaded ? "Run not found." : "Loading…")</div>
+    </div>
+}
+else
+{
+    <div class="dash">
+        <section class="dash-map">
+            <MapView Source="MapSource.History" RunId="Id" Mode="MapMode.View"/>
+        </section>
+        <aside class="dash-side">
+            <div class="page-head">
+                <div>
+                    <a href="history" class="small"><i class="bi bi-arrow-left"></i> History</a>
+                    <h1>@Format.LocalDate(_run.StartedUtc)</h1>
+                </div>
+                <span class="badge @Format.RunStateClass(_run.State)">@Format.RunState(_run.State)</span>
+            </div>
+
+            @if (_run.StartedBeforeAppStart)
+            {
+                <div class="banner info">This app was started while the run was already going, so the start time and path are partial.</div>
+            }
+            @if (_run.State == RunState.Aborted)
+            {
+                <div class="banner warn">The app stopped before the run finished; the map shows the last checkpoint.</div>
+            }
+            @if (_run.ErrorMessage is not null)
+            {
+                <div class="banner bad">@_run.ErrorMessage</div>
+            }
+
+            <div class="stat-grid">
+                <div class="stat"><div class="label">Started</div><div class="value">@Format.LocalTime(_run.StartedUtc)</div></div>
+                <div class="stat"><div class="label">Ended</div><div class="value">@(_run.EndedUtc is { } e ? Format.LocalTime(e) : "–")</div></div>
+                <div class="stat"><div class="label">Duration</div><div class="value">@Format.Duration(_run.DurationSeconds)</div></div>
+                <div class="stat"><div class="label">Area</div><div class="value">@Format.Area(_run.AreaCm2)</div></div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">Details</div>
+                <div class="status-row" style="margin-top:0">
+                    <span>Type <b>@Format.RunType(_run.RunType)</b></span>
+                    @if (_run.SegmentNames.Count > 0)
+                    {
+                        <span>Rooms <b>@string.Join(", ", _run.SegmentNames)</b></span>
+                    }
+                    @if (_run.FanPreset is not null)
+                    {
+                        <span>Suction <b>@Format.Preset(_run.FanPreset)</b></span>
+                    }
+                    @if (_run.WaterPreset is not null)
+                    {
+                        <span>Water <b>@Format.Preset(_run.WaterPreset)</b></span>
+                    }
+                    @if (_run.OperationMode is not null)
+                    {
+                        <span>Mode <b>@Format.Preset(_run.OperationMode)</b></span>
+                    }
+                    @if (_run.EndStatus is not null)
+                    {
+                        <span>Ended as <b>@Format.Status(_run.EndStatus)</b></span>
+                    }
+                    <span>Path <b>@_run.PathPointCount points@(_run.PathSegmentCount > 1 ? $" in {_run.PathSegmentCount} segments" : "")</b></span>
+                </div>
+            </div>
+
+            <div class="btn-row">
+                <a class="btn" href="api/history/@Id/map" download="cleaning-run-@(Id).json"><i class="bi bi-download"></i> Map JSON</a>
+                <button class="btn danger" @onclick="Delete" disabled="@_busy"><i class="bi bi-trash3"></i> Delete</button>
+            </div>
+        </aside>
+    </div>
+}
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    private CleaningRun? _run;
+    private bool _loaded;
+    private bool _busy;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _run = await Queries.GetAsync(Id, CancellationToken.None);
+        _loaded = true;
+    }
+
+    private async Task Delete()
+    {
+        _busy = true;
+        try
+        {
+            await Queries.DeleteAsync(Id, CancellationToken.None);
+            Toast.Info("Run deleted");
+            Nav.NavigateTo("history");
+        }
+        catch (Exception e)
+        {
+            Toast.Error(e.Message);
+            _busy = false;
+        }
+    }
+}

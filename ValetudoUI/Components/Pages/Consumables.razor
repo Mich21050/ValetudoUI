@@ -1,0 +1,131 @@
+@page "/consumables"
+@inject RobotMonitorService Monitor
+@inject ValetudoClient Client
+@inject ToastService Toast
+
+<PageTitle>Consumables</PageTitle>
+
+<div class="page">
+    <div class="page-head">
+        <h1>Consumables</h1>
+        <button class="btn sm" @onclick="LoadAsync" disabled="@_loading"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+    </div>
+
+    @if (_error is not null)
+    {
+        <div class="banner bad">@_error</div>
+    }
+
+    @if (_consumables is { } list)
+    {
+        <div class="card">
+            @if (list.Count == 0)
+            {
+                <div class="empty">No consumable information available.</div>
+            }
+            @foreach (var c in list)
+            {
+                var pct = Percent(c);
+                <div class="field" style="align-items:flex-start">
+                    <div style="flex:1">
+                        <div><b>@Format.Consumable(c)</b> <span class="muted small">@Format.Remaining(c.Remaining) left</span></div>
+                        <div class="meter @(pct <= 10 ? "bad" : pct <= 25 ? "warn" : "")"><span style="width:@(pct)%"></span></div>
+                    </div>
+                    <button class="btn sm" disabled="@_busy" @onclick="() => Reset(c)">Reset</button>
+                </div>
+            }
+        </div>
+    }
+
+    @if (_totals is { Count: > 0 } totals)
+    {
+        <div class="card">
+            <div class="card-title">Lifetime statistics</div>
+            <div class="stat-grid">
+                @foreach (var s in totals)
+                {
+                    <div class="stat"><div class="label">@Format.StatLabel(s.Type)</div><div class="value">@Format.Stat(s.Type, s.Value)</div></div>
+                }
+            </div>
+        </div>
+    }
+
+    @if (Monitor.Info is { } info)
+    {
+        <p class="muted small" style="margin-top:14px">@info.Manufacturer @info.ModelName · @info.Implementation</p>
+    }
+</div>
+
+@code {
+    private IReadOnlyList<Consumable>? _consumables;
+    private IReadOnlyList<StatisticEntry>? _totals;
+    private string? _error;
+    private bool _loading;
+    private bool _busy;
+    private string? _confirmKey;
+
+    // Typical maximum lifetimes in minutes, used only for the bar (Valetudo reports remaining, not max).
+    private static readonly Dictionary<string, double> MaxMinutes = new()
+    {
+        ["brush/main"] = 18000, ["brush/side_left"] = 12000, ["brush/side_right"] = 12000,
+        ["filter/main"] = 9000, ["cleaning/sensor"] = 1800, ["cleaning/wheel"] = 3000,
+        ["mop/main"] = 9000, ["mop/all"] = 9000, ["mop/none"] = 9000, ["detergent/dock"] = 6000
+    };
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            if (Monitor.HasCapability(Capabilities.ConsumableMonitoring))
+                _consumables = await Client.GetConsumablesAsync(CancellationToken.None);
+            if (Monitor.HasCapability(Capabilities.TotalStatistics))
+                _totals = await Client.GetTotalStatisticsAsync(CancellationToken.None);
+        }
+        catch (Exception e)
+        {
+            _error = e.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static int Percent(Consumable c)
+    {
+        if (c.Remaining.Unit == "percent") return (int)Math.Clamp(c.Remaining.Value, 0, 100);
+        var max = MaxMinutes.TryGetValue($"{c.Type}/{c.SubType}", out var m) ? m : 9000;
+        return (int)Math.Clamp(c.Remaining.Value / max * 100, 0, 100);
+    }
+
+    private async Task Reset(Consumable c)
+    {
+        var key = $"{c.Type}/{c.SubType}";
+        if (_confirmKey != key)
+        {
+            _confirmKey = key;
+            Toast.Info($"Tap Reset again to confirm resetting {Format.Consumable(c).ToLowerInvariant()}");
+            return;
+        }
+        _confirmKey = null;
+        _busy = true;
+        try
+        {
+            await Client.ResetConsumableAsync(c.Type, c.SubType, CancellationToken.None);
+            Toast.Success($"{Format.Consumable(c)} reset");
+            await LoadAsync();
+        }
+        catch (Exception e)
+        {
+            Toast.Error(e.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

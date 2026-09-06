@@ -1,0 +1,83 @@
+@implements IDisposable
+@inject RobotMonitorService Monitor
+@inject ValetudoClient Client
+@inject ToastService Toast
+
+@if (_presets.Count > 0)
+{
+    <div class="card">
+        @foreach (var (cap, presets) in _presets)
+        {
+            var current = Monitor.State.Preset(cap.AttributeType());
+            <div class="preset-group" style="margin-bottom:10px">
+                <span class="label">@cap.Label()</span>
+                <div class="chip-row">
+                    @foreach (var p in presets)
+                    {
+                        <button class="chip @(p == current ? "active" : "")" disabled="@_busy" @onclick="() => Set(cap, p)">@Format.Preset(p)</button>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private readonly List<(PresetCapability Cap, IReadOnlyList<string> Presets)> _presets = [];
+    private bool _busy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Monitor.StateChanged += OnState;
+        Monitor.ConnectionChanged += OnConnection;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (_presets.Count > 0 || !Monitor.Initialised) return;
+        foreach (var cap in Enum.GetValues<PresetCapability>())
+        {
+            if (!Monitor.HasCapability(cap.CapabilityName())) continue;
+            try
+            {
+                var presets = await Client.GetPresetsAsync(cap, CancellationToken.None);
+                _presets.Add((cap, presets));
+            }
+            catch (Exception e)
+            {
+                Toast.Error($"Could not load {cap.Label().ToLowerInvariant()} presets: {e.Message}");
+            }
+        }
+    }
+
+    private async Task Set(PresetCapability cap, string name)
+    {
+        _busy = true;
+        try { await Client.SetPresetAsync(cap, name, CancellationToken.None); }
+        catch (Exception e) { Toast.Error(e.Message); }
+        finally { _busy = false; }
+    }
+
+    private void OnState(RobotSnapshot _) => Refresh();
+
+    private void OnConnection() => _ = InvokeAsync(async () =>
+    {
+        try { await LoadAsync(); StateHasChanged(); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    });
+
+    private void Refresh()
+    {
+        try { _ = InvokeAsync(StateHasChanged); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    public void Dispose()
+    {
+        Monitor.StateChanged -= OnState;
+        Monitor.ConnectionChanged -= OnConnection;
+    }
+}

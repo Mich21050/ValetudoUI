@@ -1,0 +1,365 @@
+@page "/"
+@implements IDisposable
+@inject RobotMonitorService Monitor
+@inject ValetudoClient Client
+@inject ToastService Toast
+@inject CleaningHistoryRecorder Recorder
+
+<PageTitle>Robot</PageTitle>
+
+<div class="dash">
+    <section class="dash-map">
+        <MapView @ref="_map" Source="MapSource.Live" Mode="_mode" MaxZones="_maxZones"
+                 SelectionChanged="OnSelectionChanged" ZonesChanged="OnZonesChanged" PointPicked="OnPointPicked"/>
+
+        @if (_mode != MapMode.View)
+        {
+            <div class="map-hint">@ModeHint</div>
+        }
+
+        <div class="map-toolbar">
+            @if (Monitor.HasCapability(Capabilities.MapSegmentation))
+            {
+                <button class="btn sm @(_sheet == Sheet.Rooms ? "active" : "")" @onclick="() => OpenSheet(Sheet.Rooms)"><i class="bi bi-door-open"></i> Rooms</button>
+            }
+            @if (Monitor.HasCapability(Capabilities.ZoneCleaning))
+            {
+                <button class="btn sm @(_sheet == Sheet.Zone ? "active" : "")" @onclick="() => OpenSheet(Sheet.Zone)"><i class="bi bi-bounding-box"></i> Zone</button>
+            }
+            @if (Monitor.HasCapability(Capabilities.GoToLocation))
+            {
+                <button class="btn sm @(_sheet == Sheet.GoTo ? "active" : "")" @onclick="() => OpenSheet(Sheet.GoTo)"><i class="bi bi-geo-alt-fill"></i> Go to</button>
+            }
+            @if (HasDockActions)
+            {
+                <button class="btn sm @(_sheet == Sheet.Dock ? "active" : "")" @onclick="() => OpenSheet(Sheet.Dock)"><i class="bi bi-house-gear-fill"></i> Dock</button>
+            }
+            @if (Monitor.HasCapability(Capabilities.Locate))
+            {
+                <button class="btn sm" @onclick="Locate"><i class="bi bi-volume-up-fill"></i> Locate</button>
+            }
+        </div>
+    </section>
+
+    <aside class="dash-side">
+        <StatusCard/>
+        <ActionBar/>
+        <PresetChips/>
+        @if (Recorder.ActiveRun is { } run)
+        {
+            <div class="card small muted">Recording run #@run.Id since @Format.LocalTime(run.StartedUtc)</div>
+        }
+    </aside>
+</div>
+
+<BottomSheet Open="_sheet == Sheet.Rooms" Title="Clean rooms" OnClose="CloseSheet">
+    <ChildContent>
+    <p class="muted small" style="margin-bottom:8px">Tap rooms on the map or tick them here.</p>
+    @if (Segments.Count == 0)
+    {
+        <div class="empty">No rooms in the current map.</div>
+    }
+    else
+    {
+        <div class="check-list">
+            @foreach (var seg in Segments)
+            {
+                var index = _selectedSegments.IndexOf(seg.Id);
+                <label>
+                    <input type="checkbox" checked="@(index >= 0)" @onchange="() => ToggleSegment(seg.Id)"/>
+                    <span>@seg.DisplayName</span>
+                    @if (_customOrder && index >= 0)
+                    {
+                        <span class="order">#@(index + 1)</span>
+                    }
+                </label>
+            }
+        </div>
+    }
+    <div class="field">
+        <label>Iterations</label>
+        <Stepper @bind-Value="_iterations" Min="_segmentProps?.IterationCount?.Min ?? 1" Max="_segmentProps?.IterationCount?.Max ?? 4"/>
+    </div>
+    @if (_segmentProps?.CustomOrderSupport == true)
+    {
+        <div class="field">
+            <label class="switch"><input type="checkbox" @bind="_customOrder"/> Clean in the order selected</label>
+        </div>
+    }
+    </ChildContent>
+    <Actions>
+        <button class="btn" @onclick="ClearSegments" disabled="@(_selectedSegments.Count == 0)">Clear</button>
+        <button class="btn primary" @onclick="StartSegments" disabled="@(_selectedSegments.Count == 0 || _busy)">Start (@_selectedSegments.Count)</button>
+    </Actions>
+</BottomSheet>
+
+<BottomSheet Open="_sheet == Sheet.Zone" Title="Clean a zone" OnClose="CloseSheet">
+    <ChildContent>
+    <p class="muted small">Drag on the map to draw a rectangle. Use two fingers to pan or zoom while drawing.</p>
+    @if (_zones.Length > 0)
+    {
+        <p class="small" style="margin-top:8px">
+            @foreach (var z in _zones)
+            {
+                <span class="chip static">@((Math.Abs(z.X2 - z.X1) / 100.0).ToString("0.0")) × @((Math.Abs(z.Y2 - z.Y1) / 100.0).ToString("0.0")) m</span>
+            }
+        </p>
+    }
+    <div class="field">
+        <label>Iterations</label>
+        <Stepper @bind-Value="_zoneIterations" Min="_zoneProps?.IterationCount?.Min ?? 1" Max="_zoneProps?.IterationCount?.Max ?? 4"/>
+    </div>
+    </ChildContent>
+    <Actions>
+        <button class="btn" @onclick="ClearZones" disabled="@(_zones.Length == 0)">Clear</button>
+        <button class="btn primary" @onclick="StartZones" disabled="@(_zones.Length == 0 || _busy)">Start</button>
+    </Actions>
+</BottomSheet>
+
+<BottomSheet Open="_sheet == Sheet.GoTo" Title="Go to a spot" OnClose="CloseSheet">
+    <ChildContent>
+    <p class="muted small">Tap the map where the robot should go.</p>
+    @if (_gotoPoint is { } p)
+    {
+        <p class="small" style="margin-top:8px">Target: @((p.X / 100.0).ToString("0.00")) m, @((p.Y / 100.0).ToString("0.00")) m</p>
+    }
+    </ChildContent>
+    <Actions>
+        <button class="btn primary" @onclick="StartGoTo" disabled="@(_gotoPoint is null || _busy)">Go</button>
+    </Actions>
+</BottomSheet>
+
+<BottomSheet Open="_sheet == Sheet.Dock" Title="Dock" OnClose="CloseSheet">
+    <p class="small" style="margin-bottom:12px">Dock status: <b>@Format.Status(Monitor.State.Dock?.Value ?? "unknown")</b></p>
+    <div class="list">
+        @if (Monitor.HasCapability(Capabilities.AutoEmptyDockManualTrigger))
+        {
+            <button class="btn block" disabled="@_busy" @onclick="AutoEmpty"><i class="bi bi-trash3-fill"></i> Empty dust bin</button>
+        }
+        @if (Monitor.HasCapability(Capabilities.MopDockCleanManualTrigger))
+        {
+            <div class="btn-row">
+                <button class="btn" disabled="@_busy" @onclick="() => MopWash(true)"><i class="bi bi-droplet-fill"></i> Wash mops</button>
+                <button class="btn" disabled="@_busy" @onclick="() => MopWash(false)">Stop</button>
+            </div>
+        }
+        @if (Monitor.HasCapability(Capabilities.MopDockDryManualTrigger))
+        {
+            <div class="btn-row">
+                <button class="btn" disabled="@_busy" @onclick="() => MopDry(true)"><i class="bi bi-wind"></i> Dry mops</button>
+                <button class="btn" disabled="@_busy" @onclick="() => MopDry(false)">Stop</button>
+            </div>
+        }
+    </div>
+</BottomSheet>
+
+@code {
+    private enum Sheet { None, Rooms, Zone, GoTo, Dock }
+
+    private MapView? _map;
+    private Sheet _sheet = Sheet.None;
+    private MapMode _mode = MapMode.View;
+    private bool _busy;
+
+    private readonly List<string> _selectedSegments = [];
+    private int _iterations = 1;
+    private bool _customOrder;
+    private SegmentationProperties? _segmentProps;
+
+    private ZoneRect[] _zones = [];
+    private int _zoneIterations = 1;
+    private int _maxZones = 1;
+    private ZoneProperties? _zoneProps;
+
+    private MapPoint? _gotoPoint;
+
+    private IReadOnlyList<MapSegment> Segments => Monitor.Map?.Summary.Segments ?? [];
+
+    private bool HasDockActions =>
+        Monitor.HasCapability(Capabilities.AutoEmptyDockManualTrigger) ||
+        Monitor.HasCapability(Capabilities.MopDockCleanManualTrigger) ||
+        Monitor.HasCapability(Capabilities.MopDockDryManualTrigger);
+
+    private string ModeHint => _mode switch
+    {
+        MapMode.SelectSegments => "Tap rooms to select them",
+        MapMode.DrawZone => "Drag to draw a zone",
+        MapMode.GoTo => "Tap a spot on the map",
+        _ => ""
+    };
+
+    protected override void OnInitialized()
+    {
+        Monitor.MapChanged += OnMapChanged;
+        Monitor.ConnectionChanged += OnConnectionChanged;
+        Recorder.Changed += OnRecorderChanged;
+    }
+
+    private void OnMapChanged(MapSnapshot _) => Refresh();
+    private void OnConnectionChanged() => Refresh();
+    private void OnRecorderChanged() => Refresh();
+
+    private void Refresh()
+    {
+        try { _ = InvokeAsync(StateHasChanged); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    // ---- sheets ------------------------------------------------------------
+
+    private async Task OpenSheet(Sheet sheet)
+    {
+        if (_sheet == sheet)
+        {
+            await CloseSheet();
+            return;
+        }
+        await ResetSelections();
+        _sheet = sheet;
+        _mode = sheet switch
+        {
+            Sheet.Rooms => MapMode.SelectSegments,
+            Sheet.Zone => MapMode.DrawZone,
+            Sheet.GoTo => MapMode.GoTo,
+            _ => MapMode.View
+        };
+
+        if (sheet == Sheet.Rooms && _segmentProps is null)
+        {
+            try
+            {
+                _segmentProps = await Client.GetSegmentationPropertiesAsync(CancellationToken.None);
+                _iterations = Math.Clamp(_iterations, _segmentProps.IterationCount?.Min ?? 1, _segmentProps.IterationCount?.Max ?? 4);
+            }
+            catch (Exception e) { Toast.Error(e.Message); }
+        }
+        if (sheet == Sheet.Zone && _zoneProps is null)
+        {
+            try
+            {
+                _zoneProps = await Client.GetZonePropertiesAsync(CancellationToken.None);
+                _maxZones = Math.Max(1, _zoneProps.ZoneCount?.Max ?? 1);
+            }
+            catch (Exception e) { Toast.Error(e.Message); }
+        }
+    }
+
+    private async Task CloseSheet()
+    {
+        _sheet = Sheet.None;
+        _mode = MapMode.View;
+        await ResetSelections();
+    }
+
+    private async Task ResetSelections()
+    {
+        _selectedSegments.Clear();
+        _zones = [];
+        _gotoPoint = null;
+        if (_map is not null)
+        {
+            await _map.SetSelectionAsync([]);
+            await _map.ClearZonesAsync();
+            await _map.ClearGotoAsync();
+        }
+    }
+
+    // ---- map callbacks -------------------------------------------------------
+
+    private void OnSelectionChanged(string[] ids)
+    {
+        _selectedSegments.Clear();
+        _selectedSegments.AddRange(ids);
+    }
+
+    private void OnZonesChanged(ZoneRect[] zones) => _zones = zones;
+
+    private void OnPointPicked(MapPoint p) => _gotoPoint = p;
+
+    // ---- rooms -----------------------------------------------------------------
+
+    private async Task ToggleSegment(string id)
+    {
+        if (!_selectedSegments.Remove(id)) _selectedSegments.Add(id);
+        if (_map is not null) await _map.SetSelectionAsync(_selectedSegments);
+    }
+
+    private async Task ClearSegments()
+    {
+        _selectedSegments.Clear();
+        if (_map is not null) await _map.SetSelectionAsync([]);
+    }
+
+    private async Task StartSegments()
+    {
+        var ids = _selectedSegments.ToArray();
+        await Run(async ct =>
+        {
+            Recorder.NoteCommand(new SegmentCleanHint(ids));
+            await Client.CleanSegmentsAsync(ids, _iterations, _customOrder, ct);
+        }, $"Cleaning {ids.Length} room{(ids.Length == 1 ? "" : "s")}");
+        await CloseSheet();
+    }
+
+    // ---- zones / go-to ------------------------------------------------------------
+
+    private async Task ClearZones()
+    {
+        _zones = [];
+        if (_map is not null) await _map.ClearZonesAsync();
+    }
+
+    private async Task StartZones()
+    {
+        var zones = _zones;
+        await Run(async ct =>
+        {
+            Recorder.NoteCommand(new ZoneCleanHint());
+            await Client.CleanZonesAsync(zones, _zoneIterations, ct);
+        }, "Zone cleaning started");
+        await CloseSheet();
+    }
+
+    private async Task StartGoTo()
+    {
+        if (_gotoPoint is not { } p) return;
+        await Run(ct => Client.GoToAsync(p.X, p.Y, ct), "Robot is on its way");
+        await CloseSheet();
+    }
+
+    private Task Locate() => Run(Client.LocateAsync, "Locating robot");
+
+    // ---- dock ------------------------------------------------------------------------
+
+    private Task AutoEmpty() => Run(Client.TriggerAutoEmptyAsync, "Emptying dust bin");
+    private Task MopWash(bool start) => Run(ct => Client.MopDockCleanAsync(start, ct), start ? "Washing mops" : "Stopped washing");
+    private Task MopDry(bool start) => Run(ct => Client.MopDockDryAsync(start, ct), start ? "Drying mops" : "Stopped drying");
+
+    // ---- plumbing -------------------------------------------------------------------
+
+    private async Task Run(Func<CancellationToken, Task> action, string successMessage)
+    {
+        _busy = true;
+        try
+        {
+            await action(CancellationToken.None);
+            Toast.Success(successMessage);
+        }
+        catch (Exception e)
+        {
+            Toast.Error(e.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        Monitor.MapChanged -= OnMapChanged;
+        Monitor.ConnectionChanged -= OnConnectionChanged;
+        Recorder.Changed -= OnRecorderChanged;
+    }
+}

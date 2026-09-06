@@ -1,0 +1,29 @@
+@if (Open)
+{
+    <div class="sheet-backdrop" @onclick="Close"></div>
+    <div class="sheet" role="dialog" aria-label="@Title">
+        <header>
+            <h2>@Title</h2>
+            <button class="btn ghost icon" @onclick="Close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+        </header>
+        <div class="sheet-body">
+            @ChildContent
+        </div>
+        @if (Actions is not null)
+        {
+            <div class="sheet-actions">
+                @Actions
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public bool Open { get; set; }
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? Actions { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private Task Close() => OnClose.InvokeAsync();
+}

@@ -1,0 +1,14 @@
+<div class="stepper">
+    <button class="btn" type="button" disabled="@(Value <= Min)" @onclick="() => Set(Value - 1)"><i class="bi bi-dash-lg"></i></button>
+    <output>@Value</output>
+    <button class="btn" type="button" disabled="@(Value >= Max)" @onclick="() => Set(Value + 1)"><i class="bi bi-plus-lg"></i></button>
+</div>
+
+@code {
+    [Parameter] public int Value { get; set; }
+    [Parameter] public EventCallback<int> ValueChanged { get; set; }
+    [Parameter] public int Min { get; set; } = 1;
+    [Parameter] public int Max { get; set; } = 4;
+
+    private Task Set(int v) => ValueChanged.InvokeAsync(Math.Clamp(v, Min, Max));
+}

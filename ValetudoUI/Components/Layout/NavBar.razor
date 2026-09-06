@@ -1,0 +1,31 @@
+@implements IDisposable
+@inject RobotMonitorService Monitor
+
+<nav class="navbar">
+    <NavLink class="nav-item" href="" Match="NavLinkMatch.All">
+        <i class="nav-icon bi bi-robot"></i><span>Robot</span>
+    </NavLink>
+    <NavLink class="nav-item" href="history">
+        <i class="nav-icon bi bi-clock-history"></i><span>History</span>
+    </NavLink>
+    <NavLink class="nav-item" href="consumables">
+        <i class="nav-icon bi bi-tools"></i><span>Consumables</span>
+    </NavLink>
+    <div class="nav-status" title="@(Monitor.Connected ? "Connected to robot" : "Not connected")">
+        <span class="dot @(Monitor.Connected ? "on" : "off")"></span>
+        <span class="nav-status-text">@(Monitor.Info?.ModelName ?? "Valetudo")</span>
+    </div>
+</nav>
+
+@code {
+    protected override void OnInitialized() => Monitor.ConnectionChanged += OnChanged;
+
+    private void OnChanged()
+    {
+        try { _ = InvokeAsync(StateHasChanged); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    public void Dispose() => Monitor.ConnectionChanged -= OnChanged;
+}

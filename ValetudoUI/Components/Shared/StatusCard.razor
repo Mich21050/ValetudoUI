@@ -1,0 +1,84 @@
+@implements IDisposable
+@inject RobotMonitorService Monitor
+
+@{
+    var s = Monitor.State;
+    var status = s.Status;
+}
+
+<div class="card">
+    @if (!Monitor.Initialised)
+    {
+        <div class="banner warn">Connecting to the robot… @(Monitor.LastError is { } e ? $"({e})" : "")</div>
+    }
+    else if (!Monitor.Connected)
+    {
+        <div class="banner warn">Live updates disconnected, reconnecting… @(Monitor.LastError is { } e ? $"({e})" : "")</div>
+    }
+
+    <div class="status-main">
+        <span class="status-value">@Format.Status(s.StatusValue)</span>
+        @if (s.StatusFlag != "none")
+        {
+            <span class="badge info">@Format.Flag(s.StatusFlag)</span>
+        }
+        @if (s.Battery is { } b)
+        {
+            <span class="muted"><i class="bi @Format.BatteryIcon(b)"></i> @b.Level%</span>
+        }
+    </div>
+
+    @if (status?.Error is { } err && status.Value == "error")
+    {
+        <div class="banner bad" style="margin-top:8px">@(err.Message ?? "Robot reports an error")</div>
+    }
+
+    <div class="status-row">
+        @if (s.Dock is { } dock)
+        {
+            <span>Dock <b>@Format.Status(dock.Value)</b></span>
+        }
+        @foreach (var a in s.Attachments)
+        {
+            <span>@Format.Attachment(a.Type) <b>@(a.Attached ? "attached" : "removed")</b></span>
+        }
+        @foreach (var c in s.DockComponents.Where(c => c.Value is not ("ok" or "unknown")))
+        {
+            <span>@Format.DockComponent(c.Type) <b>@c.Value</b></span>
+        }
+    </div>
+
+    @if (s.IsInCleaningTask && Monitor.CurrentStats is { Count: > 0 } stats)
+    {
+        <div class="status-row">
+            @foreach (var st in stats)
+            {
+                <span>@Format.StatLabel(st.Type) <b>@Format.Stat(st.Type, st.Value)</b></span>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        Monitor.StateChanged += OnState;
+        Monitor.ConnectionChanged += OnConnection;
+    }
+
+    private void OnState(RobotSnapshot _) => Refresh();
+    private void OnConnection() => Refresh();
+
+    private void Refresh()
+    {
+        try { _ = InvokeAsync(StateHasChanged); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    public void Dispose()
+    {
+        Monitor.StateChanged -= OnState;
+        Monitor.ConnectionChanged -= OnConnection;
+    }
+}
