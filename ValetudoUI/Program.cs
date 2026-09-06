@@ -21,9 +21,12 @@ builder.Services.AddOptions<ValetudoOptions>()
     .ValidateOnStart();
 builder.Services.AddOptions<HistoryOptions>()
     .BindConfiguration(HistoryOptions.Section);
+builder.Services.AddOptions<TelegramOptions>()
+    .BindConfiguration(TelegramOptions.Section);
 
 var valetudoOptions = builder.Configuration.GetSection(ValetudoOptions.Section).Get<ValetudoOptions>() ?? new ValetudoOptions();
 var historyOptions = builder.Configuration.GetSection(HistoryOptions.Section).Get<HistoryOptions>() ?? new HistoryOptions();
+var telegramOptions = builder.Configuration.GetSection(TelegramOptions.Section).Get<TelegramOptions>() ?? new TelegramOptions();
 var useFakeRobot = builder.Environment.IsDevelopment() && valetudoOptions.UseFakeRobot;
 
 // Two named clients: one for REST calls, one with no timeout for the long-lived SSE streams.
@@ -44,6 +47,18 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<RobotMonitorServic
 builder.Services.AddSingleton<CleaningHistoryRecorder>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CleaningHistoryRecorder>());
 builder.Services.AddSingleton<HistoryQueries>();
+
+// Telegram Bot API, called directly with sendMessage. The token sits in the base address, so it never shows up in logs.
+if (telegramOptions.Enabled)
+{
+    builder.Services.AddHttpClient(TelegramNotifier.ClientName, c =>
+    {
+        c.BaseAddress = new Uri($"{telegramOptions.ApiBaseUrl.TrimEnd('/')}/bot{telegramOptions.BotToken!.Trim()}/");
+        c.Timeout = TimeSpan.FromSeconds(15);
+    });
+}
+builder.Services.AddSingleton<TelegramNotifier>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<TelegramNotifier>());
 builder.Services.AddScoped<ToastService>();
 
 var dbPath = Path.Combine(builder.Environment.ContentRootPath, historyOptions.DbFileName);
@@ -73,6 +88,7 @@ app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 app.MapMapEndpoints();
 app.MapHistoryEndpoints();
+app.MapTelegramEndpoints();
 if (useFakeRobot) app.MapFakeRobot();
 
 using (var scope = app.Services.CreateScope())

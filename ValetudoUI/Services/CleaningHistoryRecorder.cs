@@ -46,6 +46,9 @@ public sealed class CleaningHistoryRecorder(
     /// <summary>Raised when a run starts, ends or is recovered (thread-pool thread).</summary>
     public event Action? Changed;
 
+    /// <summary>Raised after a run has been stored as Completed (not for discarded runs). Thread-pool thread.</summary>
+    public event Action<CleaningRun>? RunCompleted;
+
     /// <summary>Called by the UI right before a cleaning command so the run gets the intended rooms/type.</summary>
     public void NoteCommand(RecorderHint hint)
     {
@@ -346,11 +349,17 @@ public sealed class CleaningHistoryRecorder(
                 run.Phases.Count, string.Join(", ", run.Phases.Select(p => p.Kind)), string.Join(", ", run.SegmentNames));
         }
 
+        var completed = run.State == RunState.Completed ? run : null;
         _run = null;
         _path = new PathAccumulator();
         _activeSegments.Clear();
         _graceDeadline = null;
         Changed?.Invoke();
+        if (completed is not null)
+        {
+            try { RunCompleted?.Invoke(completed); }
+            catch (Exception e) { log.LogWarning(e, "RunCompleted subscriber failed"); }
+        }
     }
 
     // ---- phases -------------------------------------------------------------------

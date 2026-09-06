@@ -70,6 +70,24 @@ The stored map tags every path entity with `metaData.phase` and `metaData.phaseK
 renderer colours paths by kind (`--phase-*` variables in `app.css`) and the run detail page lets you
 show or hide each phase.
 
+## Telegram notifications
+
+The app can post to a Telegram chat when a run finishes and when the robot reports an error. It calls
+the Bot API directly (`sendMessage`), no library involved.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
+2. Send the bot any message (or add it to a group), then open
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` and read `message.chat.id` from the response.
+3. Put both into `appsettings.Development.json` (or `dotnet user-secrets`), not into `appsettings.json`:
+
+```json
+"Telegram": { "BotToken": "123456:ABC...", "ChatId": "123456789", "NotifyRunCompleted": true, "NotifyErrors": true, "Silent": false }
+```
+
+`curl -X POST http://localhost:5282/api/telegram/test` sends a test message (503 with Telegram's error
+text if it fails). Errors are reported once per distinct error, not on every state update. Without a
+token and chat id the feature stays off.
+
 ## Testing without the vacuum
 
 A fake robot can be hosted inside the app (Development environment only):
