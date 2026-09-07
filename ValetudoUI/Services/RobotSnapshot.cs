@@ -37,7 +37,7 @@ public sealed record MapSummary(
     string Nonce,
     int PixelSize,
     IReadOnlyList<MapSegment> Segments,
-    int[] PathPoints,
+    IReadOnlyList<int[]> Paths,
     MapPoint? RobotPosition,
     double? RobotAngle,
     MapPoint? ChargerPosition);

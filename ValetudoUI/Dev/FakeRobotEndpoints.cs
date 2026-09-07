@@ -105,11 +105,11 @@ public static class FakeRobotEndpoints
         });
 
         // Test hooks (not part of Valetudo's API).
-        app.MapPost("/fake/scenario", (int? seconds, int? pathResetAt, string? segments, int? washAt, bool? thenMop, FakeRobot r) =>
+        app.MapPost("/fake/scenario", (int? seconds, int? pathResetAt, string? segments, int? washAt, bool? thenMop, int? gapAt, FakeRobot r) =>
         {
             var ids = string.IsNullOrWhiteSpace(segments) ? null : segments.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            r.StartScenario(seconds ?? 60, pathResetAt, ids, ids is null ? "none" : "segment", washAt, thenMop ?? false);
-            return Results.Ok(new { started = true, seconds = seconds ?? 60, pathResetAt, segments = ids, washAt, thenMop = thenMop ?? false });
+            r.StartScenario(seconds ?? 60, pathResetAt, ids, ids is null ? "none" : "segment", washAt, thenMop ?? false, gapAt);
+            return Results.Ok(new { started = true, seconds = seconds ?? 60, pathResetAt, segments = ids, washAt, thenMop = thenMop ?? false, gapAt });
         });
         app.MapPost("/fake/scenario/error", (string? message, FakeRobot r) =>
         {

@@ -33,5 +33,12 @@ public sealed class HistoryOptions
     /// <summary>How long a docked/idle robot with the "resumable" flag keeps the run open.</summary>
     public int ResumableGraceMinutes { get; set; } = 20;
 
+    /// <summary>
+    /// After the robot docks without the resumable flag, wait this long before closing the run; if it starts cleaning
+    /// again within the window (a vacuum-then-mop cycle the firmware runs as two tasks, a dust auto-empty stop), the run
+    /// continues as a new phase. 0 closes runs immediately.
+    /// </summary>
+    public int MergeWindowSeconds { get; set; } = 120;
+
     public string DbFileName { get; set; } = "valetudo-ui.db";
 }

@@ -33,7 +33,7 @@ public static class MapSummaryParser
             }
         }
 
-        var path = new List<int>();
+        var paths = new List<int[]>();
         MapPoint? robot = null, charger = null;
         double? angle = null;
         if (root.TryGetProperty("entities", out var entities) && entities.ValueKind == JsonValueKind.Array)
@@ -46,8 +46,13 @@ public static class MapSummaryParser
                 switch (type)
                 {
                     case "path":
-                        foreach (var p in pts.EnumerateArray()) path.Add(p.TryGetInt32(out var v) ? v : (int)p.GetDouble());
+                    {
+                        // One polyline per entity: Valetudo starts a new one at every break in the robot's track.
+                        var points = new List<int>(pts.GetArrayLength());
+                        foreach (var p in pts.EnumerateArray()) points.Add(p.TryGetInt32(out var v) ? v : (int)p.GetDouble());
+                        if (points.Count >= 2) paths.Add(points.ToArray());
                         break;
+                    }
                     case "robot_position":
                         robot = ReadPoint(pts);
                         if (e.TryGetProperty("metaData", out var rm) && rm.TryGetProperty("angle", out var a) && a.TryGetDouble(out var ad))
@@ -60,7 +65,7 @@ public static class MapSummaryParser
             }
         }
 
-        return new MapSummary(nonce, pixelSize, segments, path.ToArray(), robot, angle, charger);
+        return new MapSummary(nonce, pixelSize, segments, paths, robot, angle, charger);
     }
 
     private static MapPoint? ReadPoint(JsonElement pts)

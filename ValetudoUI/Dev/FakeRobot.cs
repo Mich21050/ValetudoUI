@@ -22,7 +22,10 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
     private (int X, int Y) _charger;
     private (int X, int Y) _robot;
     private double _angle;
-    private readonly List<int> _path = [];
+    // Path as Valetudo reports it: one polyline per stretch, a new one after every dock visit. Points are committed on a
+    // 10 cm grid while the live tail is the exact robot position, so the last point gets rewritten between updates.
+    private readonly List<List<int>> _paths = [];
+    private int PathPointCount => _paths.Sum(p => p.Count) / 2;
     private string _nonce = Guid.NewGuid().ToString();
     private HashSet<string> _activeSegments = [];
     private CancellationTokenSource? _scenario;
@@ -203,8 +206,13 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
                             entities.Add(JsonSerializer.Deserialize<object>(e.GetRawText()));
                         }
                         entities.Add(new { __class = "PointMapEntity", metaData = new { angle = _angle }, points = new[] { _robot.X, _robot.Y }, type = "robot_position" });
-                        if (_path.Count >= 2)
-                            entities.Add(new { __class = "PathMapEntity", metaData = new { }, points = _path.ToArray(), type = "path" });
+                        for (var i = 0; i < _paths.Count; i++)
+                        {
+                            var pts = new List<int>(_paths[i]);
+                            if (i == _paths.Count - 1 && Status is "cleaning" or "returning") { pts.Add(_robot.X); pts.Add(_robot.Y); }
+                            if (pts.Count >= 2)
+                                entities.Add(new { __class = "PathMapEntity", metaData = new { }, points = pts.ToArray(), type = "path" });
+                        }
                         output[k] = entities;
                         break;
                     default:
@@ -243,7 +251,7 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
         lock (_lock)
         {
             var seconds = RunStartedUtc is { } s ? (int)(DateTime.UtcNow - s).TotalSeconds : LastRunSeconds;
-            var area = RunStartedUtc is not null ? _path.Count / 2 * 25L * 5 : LastRunAreaCm2;
+            var area = RunStartedUtc is not null ? PathPointCount * 25L * 5 : LastRunAreaCm2;
             return new object[]
             {
                 new { __class = "ValetudoDataPoint", metaData = new { }, timestamp = DateTime.UtcNow, type = "time", value = seconds },
@@ -335,7 +343,7 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
     /// seconds (mop wash) and continues; <paramref name="thenMop"/> additionally simulates "vacuum then mop" with pad
     /// removal: mops detached in the first part, attached after the dock visit.
     /// </summary>
-    public void StartScenario(int seconds, int? pathResetAt, IReadOnlyList<string>? segmentIds, string flag, int? washAt = null, bool thenMop = false)
+    public void StartScenario(int seconds, int? pathResetAt, IReadOnlyList<string>? segmentIds, string flag, int? washAt = null, bool thenMop = false, int? gapAt = null)
     {
         CancelScenario();
         var cts = new CancellationTokenSource();
@@ -352,14 +360,13 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
                 Presets["operation_mode"] = "vacuum_then_mop";
                 MopAttached = false;
             }
-            _path.Clear();
-            _path.Add(_robot.X);
-            _path.Add(_robot.Y);
+            _paths.Clear();
+            BeginPolyline();
         }
         PublishState();
         PublishMap();
-        _ = RunScenarioAsync(seconds, pathResetAt, washAt, thenMop, cts.Token);
-        log.LogInformation("Fake scenario started: {Seconds}s, path reset at {Reset}, wash at {Wash}, then-mop {ThenMop}", seconds, pathResetAt, washAt, thenMop);
+        _ = RunScenarioAsync(seconds, pathResetAt, washAt, thenMop, gapAt, cts.Token);
+        log.LogInformation("Fake scenario started: {Seconds}s, path reset at {Reset}, wash at {Wash}, then-mop {ThenMop}, gap at {Gap}", seconds, pathResetAt, washAt, thenMop, gapAt);
     }
 
     private void CancelScenario()
@@ -369,12 +376,13 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
         old?.Cancel();
     }
 
-    private async Task RunScenarioAsync(int seconds, int? pathResetAt, int? washAt, bool thenMop, CancellationToken ct)
+    private async Task RunScenarioAsync(int seconds, int? pathResetAt, int? washAt, bool thenMop, int? gapAt, CancellationToken ct)
     {
         var rng = new Random();
         var started = DateTime.UtcNow;
         var resetDone = false;
         var washDone = false;
+        var gapDone = false;
         try
         {
             while (!ct.IsCancellationRequested)
@@ -389,18 +397,24 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
                     await MidRunDockVisitAsync(thenMop, ct);
                     continue;
                 }
+                if (gapAt is { } g && !gapDone && elapsed >= g)
+                {
+                    gapDone = true;
+                    await TaskGapAsync(ct);
+                    continue;
+                }
 
                 lock (_lock)
                 {
                     if (Status != "cleaning") continue;
                     if (pathResetAt is { } r && !resetDone && elapsed >= r)
                     {
-                        _path.Clear();
+                        _paths.Clear();
+                        BeginPolyline();
                         resetDone = true;
                     }
                     RandomStep(rng);
-                    _path.Add(_robot.X);
-                    _path.Add(_robot.Y);
+                    CommitPoint();
                     if (rng.Next(10) == 0 && Battery > 5) Battery--;
                 }
                 PublishMap();
@@ -430,13 +444,68 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
             DockStatus = "idle";
             Status = "cleaning";
             Flag = _activeSegments.Count > 0 ? "segment" : "none";
-            _path.Clear();
-            _path.Add(_robot.X);
-            _path.Add(_robot.Y);
+            BeginPolyline();
         }
         PublishState();
         PublishMap();
         log.LogInformation("Fake robot resumed after dock visit (mop attached: {Mop})", MopAttached);
+    }
+
+    /// <summary>
+    /// The firmware ends its task at the dock (docked, flag none, statistics finished) and starts a new task a few
+    /// seconds later with a fresh path, like the X40 does between the vacuum and mop parts of a cycle.
+    /// </summary>
+    private async Task TaskGapAsync(CancellationToken ct)
+    {
+        await DriveToDockAsync(ct);
+        lock (_lock)
+        {
+            Status = "docked";
+            Flag = "none";
+            FinishTaskStats();
+        }
+        PublishState();
+        PublishMap();
+        await Task.Delay(8000, ct);
+        lock (_lock)
+        {
+            Status = "cleaning";
+            Flag = _activeSegments.Count > 0 ? "segment" : "none";
+            RunStartedUtc = DateTime.UtcNow;
+            _paths.Clear();
+            BeginPolyline();
+        }
+        PublishState();
+        PublishMap();
+        log.LogInformation("Fake robot started a new task after a dock gap");
+    }
+
+    private void BeginPolyline()
+    {
+        _paths.Add([]);
+        CommitPoint();
+    }
+
+    private void CommitPoint()
+    {
+        var line = _paths[^1];
+        int x = _robot.X / 10 * 10, y = _robot.Y / 10 * 10;
+        if (line.Count >= 2 && line[^2] == x && line[^1] == y) return;
+        line.Add(x);
+        line.Add(y);
+    }
+
+    private void FinishTaskStats()
+    {
+        if (RunStartedUtc is { } s)
+        {
+            LastRunSeconds = (int)(DateTime.UtcNow - s).TotalSeconds;
+            LastRunAreaCm2 = PathPointCount * 25L * 5;
+            TotalRuns++;
+            TotalSeconds += LastRunSeconds;
+            TotalAreaCm2 += LastRunAreaCm2;
+            RunStartedUtc = null;
+        }
     }
 
     private async Task DriveToDockAsync(CancellationToken ct)
@@ -449,8 +518,7 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
             lock (_lock)
             {
                 _robot = (_robot.X + (_charger.X - _robot.X) * i / 4, _robot.Y + (_charger.Y - _robot.Y) * i / 4);
-                _path.Add(_robot.X);
-                _path.Add(_robot.Y);
+                CommitPoint();
             }
             PublishMap();
         }
@@ -464,15 +532,7 @@ public sealed class FakeRobot(IWebHostEnvironment env, IConfiguration configurat
             Status = "docked";
             Flag = "none";
             _activeSegments = [];
-            if (RunStartedUtc is { } s)
-            {
-                LastRunSeconds = (int)(DateTime.UtcNow - s).TotalSeconds;
-                LastRunAreaCm2 = _path.Count / 2 * 25L * 5;
-                TotalRuns++;
-                TotalSeconds += LastRunSeconds;
-                TotalAreaCm2 += LastRunAreaCm2;
-                RunStartedUtc = null;
-            }
+            FinishTaskStats();
         }
         PublishState();
         PublishMap();

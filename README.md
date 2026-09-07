@@ -43,11 +43,15 @@ circuit; a stored run's map comes from `/api/history/{id}/map`.
 ## How history is recorded
 
 Valetudo has no cleaning history and no "finished" event, so runs are derived from status
-transitions: `cleaning` opens a run, `docked`/`idle`/`error` without the `resumable` flag closes it
-(a resumable robot keeps the run open for `History:ResumableGraceMinutes`). During a run the path
-from every map update is accumulated (firmware path resets start a new path segment instead of
-drawing a bogus line), and in-progress runs are checkpointed every `History:CheckpointSeconds` so a
-restart of the app mid-run resumes recording. At the end the map is stored with the accumulated path
+transitions: `cleaning` opens a run, `error` closes it, and `docked`/`idle` closes it after
+`History:MergeWindowSeconds` unless the robot starts cleaning again within that window (the X40 runs a
+vacuum-then-mop cycle as two firmware tasks with a short dock stop in between; the run then continues
+as a new phase and the finished task's statistics are carried over). A robot docked with the
+`resumable` flag keeps the run open for `History:ResumableGraceMinutes`. During a run the path from
+every map update is accumulated: Valetudo reports one polyline per unbroken stretch of the track and
+the last point is the live robot position, so polylines are matched individually (never joined with a
+straight line) and firmware resets start new ones. In-progress runs are checkpointed every
+`History:CheckpointSeconds` so a restart of the app mid-run resumes recording. At the end the map is stored with the accumulated path
 substituted in, plus time and area from `CurrentStatisticsCapability`.
 
 Runs shorter than `History:MinRunSeconds` with almost no path are discarded.
@@ -117,6 +121,8 @@ four-room flat. Start a scripted run with
 curl -X POST 'http://localhost:5282/fake/scenario?seconds=60&pathResetAt=20&segments=1,2'
 # vacuum-then-mop: docks (resumable) at 20 s, mops attached afterwards -> two phases
 curl -X POST 'http://localhost:5282/fake/scenario?seconds=60&washAt=20&thenMop=true&segments=1,2'
+# firmware task boundary: docked without resumable at 15 s, new task 8 s later -> one merged run
+curl -X POST 'http://localhost:5282/fake/scenario?seconds=60&gapAt=15&washAt=35&thenMop=true'
 curl -X POST 'http://localhost:5282/fake/scenario/error?message=Stuck'
 ```
 

@@ -36,6 +36,11 @@ public sealed class CleaningHistoryRecorder(
     private PathAccumulator _path = new();
     private string? _latestMapJson;
     private DateTime? _graceDeadline;
+    private DateTime? _endDeadline;                       // merge window after a non-resumable dock
+    private IReadOnlyList<Valetudo.Models.StatisticEntry>? _dockStats;   // robot's task statistics read at that dock
+    private int _carriedTime;                             // statistics of earlier firmware tasks merged into this run
+    private long _carriedArea;
+    private int _taskFirstPhase;                          // index of the first phase of the current firmware task
     private (RecorderHint Hint, DateTime At)? _hint;
     private readonly HashSet<string> _activeSegments = [];
     private readonly Dictionary<string, string> _segmentNames = [];
@@ -162,9 +167,11 @@ public sealed class CleaningHistoryRecorder(
         var key = StatusKey(s);
         var changed = key != _lastStatusKey;
         _lastStatusKey = key;
+        if (changed) log.LogDebug("Robot status {Status}", key);
 
         var cleaning = status.Value == "cleaning";
         var terminal = status.Value is "docked" or "idle" or "error";
+        var now = DateTime.UtcNow;
 
         if (_run is null)
         {
@@ -172,9 +179,25 @@ public sealed class CleaningHistoryRecorder(
             return;
         }
 
+        if (!cleaning && _endDeadline is { } end && now > end)
+        {
+            await EndRunAsync(s, ct);
+            return;
+        }
+
         if (cleaning)
         {
-            if (_graceDeadline is not null)
+            if (_endDeadline is not null)
+            {
+                // The firmware finished a task and started the next one right away (vacuum-then-mop as two tasks,
+                // a dust auto-empty stop): keep it as one run, carry the finished task's statistics.
+                _endDeadline = null;
+                _graceDeadline = null;
+                CarryTaskStats();
+                log.LogInformation("Run {Id}: cleaning resumed within the merge window, continuing the run", _run.Id);
+                BeginPhase(s);
+            }
+            else if (_graceDeadline is not null)
             {
                 // Back from a mid-task dock visit (mop wash, pad swap, charge): everything from here on is a new phase.
                 _graceDeadline = null;
@@ -185,17 +208,26 @@ public sealed class CleaningHistoryRecorder(
         {
             if (status.Flag == "resumable")
             {
+                _endDeadline = null;
                 if (_graceDeadline is null)
                 {
-                    _graceDeadline = DateTime.UtcNow.AddMinutes(_opts.ResumableGraceMinutes);
-                    ClosePhase(DateTime.UtcNow, CumulativeArea(monitor.CurrentStats));
+                    _graceDeadline = now.AddMinutes(_opts.ResumableGraceMinutes);
+                    ClosePhase(now, CumulativeArea(monitor.CurrentStats));
                     log.LogInformation("Run {Id}: robot {Status} but resumable, keeping run open until {Deadline:u}", _run.Id, status.Value, _graceDeadline);
                 }
             }
-            else
+            else if (status.Value == "error" || _opts.MergeWindowSeconds <= 0)
             {
                 await EndRunAsync(s, ct);
                 return;
+            }
+            else if (_endDeadline is null)
+            {
+                _graceDeadline = null;
+                _endDeadline = now.AddSeconds(_opts.MergeWindowSeconds);
+                _dockStats = await TryReadStatsAsync(ct);
+                ClosePhase(now, CumulativeArea(_dockStats ?? monitor.CurrentStats));
+                log.LogInformation("Run {Id}: robot {Status}; closing the run in {Seconds}s unless cleaning resumes", _run.Id, status.Value, _opts.MergeWindowSeconds);
             }
         }
 
@@ -210,7 +242,7 @@ public sealed class CleaningHistoryRecorder(
         if (_run is null) return;
         _latestMapJson = m.Json;
         _run.MapNonce = m.Nonce;
-        _path.Observe(m.Summary.PathPoints);
+        _path.Observe(m.Summary.Paths);
         foreach (var seg in m.Summary.Segments)
             if (seg.Active) _activeSegments.Add(seg.Id);
     }
@@ -221,6 +253,11 @@ public sealed class CleaningHistoryRecorder(
         if (_graceDeadline is { } deadline && DateTime.UtcNow > deadline)
         {
             log.LogInformation("Run {Id}: resumable grace period expired, closing run", _run.Id);
+            await EndRunAsync(monitor.State, ct);
+            return;
+        }
+        if (_endDeadline is { } end && DateTime.UtcNow > end)
+        {
             await EndRunAsync(monitor.State, ct);
             return;
         }
@@ -248,7 +285,7 @@ public sealed class CleaningHistoryRecorder(
 
         _path = new PathAccumulator();
         _activeSegments.Clear();
-        _graceDeadline = null;
+        ResetTaskState();
 
         if (hint is SegmentCleanHint sc)
         {
@@ -262,7 +299,7 @@ public sealed class CleaningHistoryRecorder(
         if (map is not null)
         {
             run.MapNonce = map.Nonce;
-            _path.Observe(map.Summary.PathPoints);
+            _path.Observe(map.Summary.Paths);
             foreach (var seg in map.Summary.Segments)
                 if (seg.Active) _activeSegments.Add(seg.Id);
         }
@@ -307,18 +344,17 @@ public sealed class CleaningHistoryRecorder(
         var run = _run;
         var now = DateTime.UtcNow;
 
-        IReadOnlyList<Valetudo.Models.StatisticEntry>? stats = null;
-        if (monitor.HasCapability(Valetudo.Models.Capabilities.CurrentStatistics))
-        {
-            try { stats = await client.GetCurrentStatisticsAsync(ct); }
-            catch (Exception e) when (e is not OperationCanceledException) { log.LogWarning("Could not read current statistics at run end: {Message}", e.Message); }
-        }
+        var stats = await TryReadStatsAsync(ct) ?? _dockStats;
 
         run.EndedUtc = now;
+        ClosePhase(now, CumulativeArea(stats ?? monitor.CurrentStats));
         var reportedTime = stats?.FirstOrDefault(x => x.Type == "time")?.Value;
-        run.DurationSeconds = reportedTime is > 0 ? (int)reportedTime.Value : (int)(now - run.StartedUtc).TotalSeconds;
         var reportedArea = stats?.FirstOrDefault(x => x.Type == "area")?.Value;
-        run.AreaCm2 = reportedArea is > 0 ? (long)reportedArea.Value : null;
+        // The robot's counters only cover its current task; earlier tasks merged into this run were carried over.
+        var lastTaskTime = reportedTime is > 0 ? (int)reportedTime.Value : run.Phases.Skip(_taskFirstPhase).Sum(p => p.DurationSeconds);
+        run.DurationSeconds = _carriedTime + lastTaskTime;
+        var area = _carriedArea + (reportedArea is > 0 ? (long)reportedArea.Value : 0);
+        run.AreaCm2 = area > 0 ? area : null;
         run.EndStatus = s.Status?.Value;
         run.EndFlag = s.Status?.Flag;
         run.ErrorMessage = s.Status?.Error?.Message;
@@ -326,7 +362,6 @@ public sealed class CleaningHistoryRecorder(
         run.PathPointCount = _path.TotalPoints;
         run.PathSegmentCount = _path.Segments.Count;
         run.LastCheckpointUtc = now;
-        ClosePhase(now, reportedArea is > 0 ? (long)reportedArea.Value : CumulativeArea(monitor.CurrentStats));
         UpdatePhasePoints(run);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct);
@@ -353,7 +388,7 @@ public sealed class CleaningHistoryRecorder(
         _run = null;
         _path = new PathAccumulator();
         _activeSegments.Clear();
-        _graceDeadline = null;
+        ResetTaskState();
         Changed?.Invoke();
         if (completed is not null)
         {
@@ -400,9 +435,43 @@ public sealed class CleaningHistoryRecorder(
         phase.DurationSeconds = (int)(now - phase.StartedUtc).TotalSeconds;
         if (cumulativeAreaCm2 is { } cum)
         {
-            var before = _run.Phases.Take(_run.Phases.Count - 1).Sum(p => p.AreaCm2 ?? 0);
+            // The robot's area counter is cumulative within one firmware task; earlier phases of that task were already credited.
+            var before = _run.Phases.Skip(_taskFirstPhase).Take(_run.Phases.Count - 1 - _taskFirstPhase).Sum(p => p.AreaCm2 ?? 0);
             // A negative delta means the robot restarted its counters at the dock visit; take the raw value then.
             phase.AreaCm2 = cum >= before ? cum - before : cum;
+        }
+    }
+
+    /// <summary>The firmware closed a task and starts another inside the same run: bank that task's statistics.</summary>
+    private void CarryTaskStats()
+    {
+        if (_run is null) return;
+        var time = _dockStats?.FirstOrDefault(x => x.Type == "time")?.Value;
+        var area = _dockStats?.FirstOrDefault(x => x.Type == "area")?.Value;
+        _carriedTime += time is > 0 ? (int)time.Value : _run.Phases.Skip(_taskFirstPhase).Sum(p => p.DurationSeconds);
+        _carriedArea += area is > 0 ? (long)area.Value : 0;
+        _taskFirstPhase = _run.Phases.Count;
+        _dockStats = null;
+    }
+
+    private void ResetTaskState()
+    {
+        _graceDeadline = null;
+        _endDeadline = null;
+        _dockStats = null;
+        _carriedTime = 0;
+        _carriedArea = 0;
+        _taskFirstPhase = 0;
+    }
+
+    private async Task<IReadOnlyList<Valetudo.Models.StatisticEntry>?> TryReadStatsAsync(CancellationToken ct)
+    {
+        if (!monitor.HasCapability(Valetudo.Models.Capabilities.CurrentStatistics)) return null;
+        try { return await client.GetCurrentStatisticsAsync(ct); }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            log.LogWarning("Could not read current statistics: {Message}", e.Message);
+            return null;
         }
     }
 
