@@ -16,6 +16,13 @@ public sealed record RunListItem(
     bool StartedBeforeAppStart,
     string? ErrorMessage);
 
+/// <summary>Stored map of a run plus what is needed to decide how long a browser may cache it.</summary>
+public sealed record RunMapBlob(byte[] MapJsonGzip, RunState State, DateTime LastCheckpointUtc)
+{
+    /// <summary>Changes whenever the stored map is rewritten (each checkpoint and at completion).</summary>
+    public string Version => LastCheckpointUtc.Ticks.ToString();
+}
+
 public sealed class HistoryQueries(IDbContextFactory<AppDbContext> dbFactory)
 {
     public async Task<List<RunListItem>> ListAsync(int skip, int take, CancellationToken ct)
@@ -41,10 +48,13 @@ public sealed class HistoryQueries(IDbContextFactory<AppDbContext> dbFactory)
         return await db.Runs.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
     }
 
-    public async Task<byte[]?> GetMapGzipAsync(int id, CancellationToken ct)
+    public async Task<RunMapBlob?> GetMapGzipAsync(int id, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.RunMaps.AsNoTracking().Where(m => m.CleaningRunId == id).Select(m => m.MapJsonGzip).FirstOrDefaultAsync(ct);
+        return await db.RunMaps.AsNoTracking()
+            .Where(m => m.CleaningRunId == id)
+            .Select(m => new RunMapBlob(m.MapJsonGzip, m.Run.State, m.Run.LastCheckpointUtc))
+            .FirstOrDefaultAsync(ct);
     }
 
     public async Task<bool> DeleteAsync(int id, CancellationToken ct)
